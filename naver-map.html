@@ -1,0 +1,234 @@
+
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport"
+        content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>고려딜리버리 기사 위치</title>
+  <style>
+    html,body,#map {
+      width:100%;
+      height:100%;
+      margin:0;
+      padding:0;
+      overflow:hidden;
+      background:#e8edf4;
+      font-family:Arial,sans-serif;
+    }
+    .rider-pin {
+      width:20px;
+      height:20px;
+      border-radius:50%;
+      background:#2385ef;
+      border:3px solid white;
+      box-shadow:0 2px 9px #10233c77;
+      box-sizing:border-box;
+    }
+    .rider-label {
+      position:absolute;
+      top:-31px;
+      left:50%;
+      transform:translateX(-50%);
+      background:#152b49;
+      color:white;
+      padding:5px 9px;
+      border-radius:7px;
+      font-size:12px;
+      font-weight:bold;
+      white-space:nowrap;
+    }
+    #message {
+      position:absolute;
+      top:12px;
+      left:12px;
+      z-index:100;
+      background:white;
+      padding:10px 13px;
+      border-radius:9px;
+      font-size:12px;
+      box-shadow:0 2px 9px #0002;
+    }
+  </style>
+  <script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=e80w2wxg9n"></script>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="message">네이버 지도 연결 중...</div>
+
+  <script>
+    (function () {
+      function send(data) {
+        try {
+          if (window.ReactNativeWebView) {
+            window.ReactNativeWebView.postMessage(
+              JSON.stringify(data)
+            );
+          }
+        } catch (e) {}
+      }
+
+      const message = document.getElementById('message');
+
+      if (!window.naver || !naver.maps) {
+        message.textContent = '네이버 지도 로딩 실패 · API 인증 설정 확인';
+        send({
+          type:'map-error',
+          message:'네이버 지도 API 로딩 실패. Client ID 및 Web 서비스 URL을 확인하세요.'
+        });
+        return;
+      }
+
+      const map = new naver.maps.Map('map', {
+        center:new naver.maps.LatLng(35.1595,126.8526),
+        zoom:12,
+        zoomControl:true,
+        zoomControlOptions:{
+          position:naver.maps.Position.TOP_RIGHT
+        }
+      });
+
+      const markers = new Map();
+      let fitted = false;
+      let infoWindow = null;
+
+      function escapeHtml(value) {
+        return String(value == null ? '' : value)
+          .replace(/[&<>"']/g, function (c) {
+            return {
+              '&':'&amp;',
+              '<':'&lt;',
+              '>':'&gt;',
+              '"':'&quot;',
+              "'":'&#39;'
+            }[c];
+          });
+      }
+
+      function pinHtml(name) {
+        return '<div style="position:relative;width:20px;height:20px;">' +
+          '<div class="rider-label">' + escapeHtml(name) + '</div>' +
+          '<div class="rider-pin"></div>' +
+          '</div>';
+      }
+
+      window.__KD_UPDATE_RIDERS = function (data) {
+        const list = Array.isArray(data) ? data : [];
+        const ids = new Set();
+
+        for (const rider of list) {
+          const lat = Number(rider.latitude);
+          const lng = Number(rider.longitude);
+          const id = String(rider.rider_id || rider.id || '');
+
+          if (
+            !id ||
+            rider.latitude == null ||
+            rider.longitude == null ||
+            !Number.isFinite(lat) ||
+            !Number.isFinite(lng) ||
+            Math.abs(lat) > 90 ||
+            Math.abs(lng) > 180
+          ) continue;
+
+          ids.add(id);
+
+          const position = new naver.maps.LatLng(lat,lng);
+          const name = String(rider.rider_name || id);
+
+          let entry = markers.get(id);
+
+          if (!entry) {
+            const marker = new naver.maps.Marker({
+              position:position,
+              map:map,
+              icon:{
+                content:pinHtml(name),
+                size:new naver.maps.Size(20,20),
+                anchor:new naver.maps.Point(10,10)
+              }
+            });
+
+            entry = {marker:marker,name:name};
+            markers.set(id,entry);
+
+            naver.maps.Event.addListener(marker,'click',function () {
+              window.__KD_FOCUS_RIDER(id);
+            });
+          } else {
+            entry.marker.setPosition(position);
+
+            if (entry.name !== name) {
+              entry.marker.setIcon({
+                content:pinHtml(name),
+                size:new naver.maps.Size(20,20),
+                anchor:new naver.maps.Point(10,10)
+              });
+              entry.name = name;
+            }
+          }
+        }
+
+        for (const [id,entry] of markers) {
+          if (!ids.has(id)) {
+            entry.marker.setMap(null);
+            markers.delete(id);
+          }
+        }
+
+        if (!fitted && markers.size) {
+          const bounds = new naver.maps.LatLngBounds();
+
+          for (const entry of markers.values()) {
+            bounds.extend(entry.marker.getPosition());
+          }
+
+          if (markers.size === 1) {
+            map.setCenter(
+              markers.values().next().value.marker.getPosition()
+            );
+            map.setZoom(15);
+          } else {
+            map.fitBounds(bounds);
+          }
+
+          fitted = true;
+        }
+
+        message.style.display = markers.size ? 'none' : 'block';
+        if (!markers.size) {
+          message.textContent = '현재 표시할 위치 공유 기사가 없습니다.';
+        }
+      };
+
+      window.__KD_FOCUS_RIDER = function (id) {
+        const entry = markers.get(String(id));
+        if (!entry) return;
+
+        const position = entry.marker.getPosition();
+        map.setCenter(position);
+        map.setZoom(16);
+
+        if (infoWindow) infoWindow.close();
+
+        infoWindow = new naver.maps.InfoWindow({
+          content:
+            '<div style="padding:12px 16px;font-size:13px;">' +
+            '<b>' + escapeHtml(entry.name) + '</b><br>' +
+            escapeHtml(id) +
+            '</div>'
+        });
+
+        infoWindow.open(map,entry.marker);
+      };
+
+      window.__KD_MAP_RESIZE = function () {
+        naver.maps.Event.trigger(map,'resize');
+      };
+
+      message.textContent = '현재 표시할 위치 공유 기사가 없습니다.';
+      send({type:'map-ready'});
+    })();
+  </script>
+</body>
+</html>
